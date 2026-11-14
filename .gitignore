@@ -1,0 +1,13 @@
+# Python & environments
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Cached market data (keep directory via .gitkeep if needed)
+data/parquet/*.parquet
+
+# Environment variables
+.env
+

@@ -1,0 +1,85 @@
+presets:
+  kraken_prop_5k_starter:
+    name: "kraken_prop_5k_starter"
+    initial_balance: 5000.0
+    entry_fee_usd: 45.0
+    profit_target_pct: 0.10
+    max_drawdown_pct: 0.06
+    drawdown_type: "STATIC"
+    max_daily_loss_pct: 0.03
+    mdl_reset_basis: "BALANCE"
+    daily_reset_utc_hour: 0
+    daily_reset_utc_minute: 30
+    commission_bps_per_side: 4.0
+    spread_markup_bps_per_side: 0.0
+    daily_swap_rate_pct: 0.033
+    max_leverage: 5.0
+    profit_split_pct: 0.80
+
+  kraken_prop_5k_intermediate:
+    name: "kraken_prop_5k_intermediate"
+    initial_balance: 5000.0
+    entry_fee_usd: 33.0
+    profit_target_pct: 0.12
+    max_drawdown_pct: 0.05
+    drawdown_type: "STATIC"
+    max_daily_loss_pct: 0.03
+    mdl_reset_basis: "BALANCE"
+    daily_reset_utc_hour: 0
+    daily_reset_utc_minute: 30
+    commission_bps_per_side: 4.0
+    spread_markup_bps_per_side: 0.0
+    daily_swap_rate_pct: 0.033
+    max_leverage: 5.0
+    profit_split_pct: 0.80
+
+  kraken_prop_5k_advanced:
+    name: "kraken_prop_5k_advanced"
+    initial_balance: 5000.0
+    entry_fee_usd: 20.0
+    profit_target_pct: 0.09
+    max_drawdown_pct: 0.03
+    drawdown_type: "STATIC"
+    max_daily_loss_pct: 0.03
+    mdl_reset_basis: "BALANCE"
+    daily_reset_utc_hour: 0
+    daily_reset_utc_minute: 30
+    commission_bps_per_side: 4.0
+    spread_markup_bps_per_side: 0.0
+    daily_swap_rate_pct: 0.033
+    max_leverage: 5.0
+    profit_split_pct: 0.80
+
+  kraken_prop_50k_lite:
+    name: "kraken_prop_50k_lite"
+    initial_balance: 50000.0
+    entry_fee_usd: 139.0
+    profit_target_pct: 0.06
+    max_drawdown_pct: 0.03
+    drawdown_type: "TRAILING_CLOSED"
+    max_daily_loss_pct: null
+    mdl_reset_basis: "BALANCE"
+    daily_reset_utc_hour: 0
+    daily_reset_utc_minute: 30
+    commission_bps_per_side: 4.0
+    spread_markup_bps_per_side: 0.0
+    daily_swap_rate_pct: 0.013
+    max_leverage: 5.0
+    profit_split_pct: 0.80
+
+  kraken_funded_10k_mid:
+    name: "kraken_funded_10k_mid"
+    initial_balance: 10000.0
+    entry_fee_usd: 0.0
+    profit_target_pct: 0.12
+    max_drawdown_pct: 0.03
+    drawdown_type: "STATIC"
+    max_daily_loss_pct: null
+    mdl_reset_basis: "BALANCE"
+    daily_reset_utc_hour: 0
+    daily_reset_utc_minute: 30
+    commission_bps_per_side: 0.0
+    spread_markup_bps_per_side: 4.0
+    daily_swap_rate_pct: 0.0
+    max_leverage: 1.0
+    profit_split_pct: 0.80
