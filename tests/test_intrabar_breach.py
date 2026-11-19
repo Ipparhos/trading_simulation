@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -109,28 +109,79 @@ def test_wick_breach_without_stop_loss_even_on_green_close() -> None:
 
 
 def test_naive_timestamps_raise_value_error() -> None:
-    """All engine clock and schema entry points must reject naive datetimes."""
+    """All engine clock and schema entry points must reject naive and non-UTC datetimes."""
     naive = datetime(2026, 1, 2, 12, 0)
+    non_utc = datetime(2026, 1, 2, 14, 0, tzinfo=timezone(timedelta(hours=2)))
     utc_time = datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
 
-    with pytest.raises(ValueError):
-        OhlcBar(timestamp=naive, open=100.0, high=101.0, low=99.0, close=100.0)
+    for invalid_dt in (naive, non_utc):
+        with pytest.raises(ValueError):
+            OhlcBar(timestamp=invalid_dt, open=100.0, high=101.0, low=99.0, close=100.0)
 
-    with pytest.raises(ValueError):
-        Position(
-            symbol="BTC/USD",
-            side=Side.LONG,
-            qty=1.0,
-            entry_price=100.0,
-            entry_time=naive,
-        )
+        with pytest.raises(ValueError):
+            Position(
+                symbol="BTC/USD",
+                side=Side.LONG,
+                qty=1.0,
+                entry_price=100.0,
+                entry_time=invalid_dt,
+            )
 
-    with pytest.raises(ValueError):
-        check_4h_rollovers(naive, utc_time)
+        with pytest.raises(ValueError):
+            check_4h_rollovers(invalid_dt, utc_time)
 
-    with pytest.raises(ValueError):
-        crossed_daily_reset(utc_time, naive)
+        with pytest.raises(ValueError):
+            crossed_daily_reset(utc_time, invalid_dt)
 
-    clock = EngineClock()
-    with pytest.raises(ValueError):
-        clock.advance(naive)
+        clock = EngineClock()
+        with pytest.raises(ValueError):
+            clock.advance(invalid_dt)
+
+
+def test_target_auto_liquidate_requires_equity_after_exit_fees() -> None:
+    """Target auto-liquidation only triggers when live_equity after exit fees reaches target."""
+    config = ChallengeConfig.load_preset("kraken_prop_5k_advanced")
+    sim = Simulator(config)
+
+    # Target is $5,450 (+9%). Open 0.5 BTC LONG @ $100,000 ($20 entry fee -> balance $4,980).
+    sim.open_position(
+        symbol="BTC/USD",
+        side=Side.LONG,
+        qty=0.5,
+        raw_price=100_000.0,
+        entry_time=datetime(2026, 1, 2, 13, 0, tzinfo=timezone.utc),
+    )
+
+    # At high=$100,940: gross PnL = +$470 -> balance+PnL = $5,450, but est. exit fee ~$20.19
+    # leaves live_equity ~$5,429.81 (< $5,450), so account must stay ACTIVE.
+    near_miss_bar = OhlcBar(
+        timestamp=datetime(2026, 1, 2, 13, 5, tzinfo=timezone.utc),
+        open=100_000.0,
+        high=100_940.0,
+        low=100_000.0,
+        close=100_900.0,
+    )
+    snap_near_miss = sim.process_bar(near_miss_bar)
+    assert snap_near_miss is not None
+    assert snap_near_miss.status == AccountStatus.ACTIVE
+    assert sim.position is not None
+
+    # Next bar reaches high=$101,100 where net equity after exit fees exceeds $5,450.
+    pass_bar = OhlcBar(
+        timestamp=datetime(2026, 1, 2, 13, 10, tzinfo=timezone.utc),
+        open=100_900.0,
+        high=101_100.0,
+        low=100_900.0,
+        close=101_050.0,
+    )
+    snap_pass = sim.process_bar(pass_bar)
+    assert snap_pass is not None
+    assert snap_pass.status == AccountStatus.PASSED
+    assert sim.position is None
+
+    result = sim.get_result()
+    assert result.status == AccountStatus.PASSED
+    assert len(result.trades) == 1
+    assert result.trades[0].exit_reason == ExitReason.TARGET_AUTO_LIQUIDATE
+    assert result.final_balance == pytest.approx(5_450.0)
+    assert result.final_equity == pytest.approx(result.final_balance)

@@ -1,5 +1,6 @@
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Iterable, Optional
+from typing import Iterable, Optional, overload
 
 from src.engine.clock import EngineClock, next_daily_reset_after
 from src.engine.execution import ExecutionEngine
@@ -10,6 +11,7 @@ from src.schemas.orders import (
     ExitReason,
     LedgerEntry,
     LedgerEntryType,
+    OrderType,
     Position,
     Side,
     TradeRecord,
@@ -21,10 +23,43 @@ from src.schemas.telemetry import (
     OhlcBar,
     SimulationResult,
 )
+from src.strategies.base import BaseStrategy, CloseIntent, OrderIntent, StrategySignal
+
+
+class _BoundedHistoryView(Sequence[OhlcBar]):
+    """Read-only view of bars[0..visible_len-1] preventing lookahead access."""
+
+    def __init__(self, source: Sequence[OhlcBar], visible_len: int) -> None:
+        self._source = source
+        self._visible_len = visible_len
+
+    def __len__(self) -> int:
+        return self._visible_len
+
+    @overload
+    def __getitem__(self, index: int) -> OhlcBar: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> Sequence[OhlcBar]: ...
+
+    def __getitem__(self, index: int | slice) -> OhlcBar | Sequence[OhlcBar]:
+        if isinstance(index, slice):
+            start, stop, step = index.indices(self._visible_len)
+            return [self._source[i] for i in range(start, stop, step)]
+        if index < 0:
+            index += self._visible_len
+        if index < 0 or index >= self._visible_len:
+            raise IndexError("Lookahead violation or out-of-bounds history access.")
+        return self._source[index]
 
 
 class Simulator:
-    """Sequential event-driven bar simulator enforcing Kraken Prop & Funded rules."""
+    """Sequential event-driven bar simulator enforcing Kraken Prop & Funded rules.
+
+    Assumes sub-4-hour bar granularity (e.g., 1m/5m/15m) so 4h swap rollovers
+    align with bar opens. Bars spanning multiple 4h boundaries value each rollover
+    at that bar's ``open`` price.
+    """
 
     def __init__(self, config: ChallengeConfig, slippage_bps: float = 0.0) -> None:
         self.config = config
@@ -134,7 +169,7 @@ class Simulator:
                 slippage_bps=slippage_bps,
             )
             self.position = None
-        self.guard.status = breach_status
+        self.guard.transition_status(breach_status)
         self.breach_timestamp = exit_time
         self.breach_reason = reason_text
 
@@ -159,6 +194,11 @@ class Simulator:
         return snapshot
 
     def _process_step_a_clock_events(self, bar: OhlcBar) -> Optional[BarSnapshot]:
+        """Process 4h swap rollovers and daily 00:30 UTC reset in chronological order.
+
+        Note: Swap notional is valued at ``bar.open`` for every 4h boundary crossed
+        in ``(prev_time, bar.timestamp]``.
+        """
         prev_time = self.clock.last_processed_time
         rollovers, did_reset = self.clock.advance(bar.timestamp)
         if prev_time is None:
@@ -212,7 +252,59 @@ class Simulator:
                 self.guard.on_daily_reset(current_close_equity=open_equity)
         return None
 
-    def process_bar(self, bar: OhlcBar) -> Optional[BarSnapshot]:
+    def _apply_pending_signal_at_open(
+        self, bar: OhlcBar, signal: StrategySignal
+    ) -> None:
+        if isinstance(signal, CloseIntent):
+            if self.position is not None:
+                self.close_position_signal(
+                    raw_price=bar.open, exit_time=bar.timestamp
+                )
+            return
+
+        if isinstance(signal, OrderIntent) and self.position is None:
+            if signal.order_type == OrderType.MARKET:
+                self.open_position(
+                    symbol=signal.symbol,
+                    side=signal.side,
+                    qty=signal.qty,
+                    raw_price=bar.open,
+                    entry_time=bar.timestamp,
+                    stop_loss=signal.stop_loss,
+                    take_profit=signal.take_profit,
+                )
+            elif (
+                signal.order_type == OrderType.LIMIT
+                and signal.limit_price is not None
+            ):
+                if signal.side == Side.LONG and bar.low <= signal.limit_price:
+                    fill_raw = min(bar.open, signal.limit_price)
+                    self.open_position(
+                        symbol=signal.symbol,
+                        side=signal.side,
+                        qty=signal.qty,
+                        raw_price=fill_raw,
+                        entry_time=bar.timestamp,
+                        stop_loss=signal.stop_loss,
+                        take_profit=signal.take_profit,
+                        slippage_bps=0.0,
+                    )
+                elif signal.side == Side.SHORT and bar.high >= signal.limit_price:
+                    fill_raw = max(bar.open, signal.limit_price)
+                    self.open_position(
+                        symbol=signal.symbol,
+                        side=signal.side,
+                        qty=signal.qty,
+                        raw_price=fill_raw,
+                        entry_time=bar.timestamp,
+                        stop_loss=signal.stop_loss,
+                        take_profit=signal.take_profit,
+                        slippage_bps=0.0,
+                    )
+
+    def process_bar(
+        self, bar: OhlcBar, pending_signal: Optional[StrategySignal] = None
+    ) -> Optional[BarSnapshot]:
         """Process a single OHLC bar strictly in order: Clock -> Adverse -> Favorable."""
         if self.guard.status != AccountStatus.ACTIVE:
             return None
@@ -222,9 +314,13 @@ class Simulator:
         if step_a_halt is not None:
             return step_a_halt
 
+        if pending_signal is not None:
+            self._apply_pending_signal_at_open(bar, pending_signal)
+
         if self.position is None:
             balance = self.guard.closed_balance
-            self.guard.check_target_reached(balance)
+            if self.guard.check_target_reached(balance):
+                self.guard.transition_status(AccountStatus.PASSED)
             return self._record_snapshot(
                 timestamp=bar.timestamp,
                 worst_intrabar_equity=balance,
@@ -269,7 +365,8 @@ class Simulator:
             )
             self.position = None
             close_equity = self.guard.closed_balance
-            self.guard.check_target_reached(close_equity)
+            if self.guard.check_target_reached(close_equity):
+                self.guard.transition_status(AccountStatus.PASSED)
             return self._record_snapshot(
                 timestamp=bar.timestamp,
                 worst_intrabar_equity=worst_intrabar_equity,
@@ -291,6 +388,11 @@ class Simulator:
                     self.position, self.guard, slippage_bps=0.0
                 )
                 target_raw = min(bar.high, max(bar.low, solved))
+                if (
+                    self.guard.live_equity(self.position, target_raw)
+                    < self.guard.profit_target_equity - 1e-9
+                ):
+                    target_raw = best_raw_price
             self.execution.close_position(
                 guard=self.guard,
                 ledger=self.ledger,
@@ -302,6 +404,7 @@ class Simulator:
                 slippage_bps=0.0,
             )
             self.position = None
+            self.guard.transition_status(AccountStatus.PASSED)
             return self._record_snapshot(
                 timestamp=bar.timestamp,
                 worst_intrabar_equity=worst_intrabar_equity,
@@ -362,3 +465,31 @@ class Simulator:
             ledger=list(self.ledger),
             snapshots=list(self.snapshots),
         )
+
+
+def run_strategy_simulation(
+    bars: Sequence[OhlcBar],
+    strategy: BaseStrategy,
+    config: ChallengeConfig,
+    slippage_bps: float = 0.0,
+) -> SimulationResult:
+    """Run a strategy sequentially across bars with strict next-bar execution."""
+    sim = Simulator(config=config, slippage_bps=slippage_bps)
+    pending_signal: Optional[StrategySignal] = None
+
+    for index, bar in enumerate(bars):
+        if sim.guard.status != AccountStatus.ACTIVE:
+            break
+        snapshot = sim.process_bar(bar, pending_signal=pending_signal)
+        pending_signal = None
+        if snapshot is None or sim.guard.status != AccountStatus.ACTIVE:
+            break
+        history_view = _BoundedHistoryView(bars, index + 1)
+        pending_signal = strategy.on_bar(
+            index=index,
+            bar=bar,
+            history_view=history_view,
+            open_position=sim.position,
+            equity=snapshot.close_equity,
+        )
+    return sim.get_result()

@@ -77,18 +77,17 @@ class RulesGuard:
             self.active_mdd_floor = self.highest_closed_balance - max_dd_dollars
 
     def check_breach(self, equity: float) -> Optional[AccountStatus]:
-        """Return breach status and transition state if equity hits MDD or MDL floor."""
+        """Pure query: return breach status if equity hits MDD or MDL floor."""
         if equity <= self.active_mdd_floor:
-            self.status = AccountStatus.BREACHED_MDD
-            return self.status
+            return AccountStatus.BREACHED_MDD
         if self.active_mdl_floor is not None and equity <= self.active_mdl_floor:
-            self.status = AccountStatus.BREACHED_MDL
-            return self.status
+            return AccountStatus.BREACHED_MDL
         return None
 
     def check_target_reached(self, equity: float) -> bool:
-        """Return True and mark account PASSED if equity reaches profit target."""
-        if equity >= self.profit_target_equity:
-            self.status = AccountStatus.PASSED
-            return True
-        return False
+        """Pure query: return True if equity meets or exceeds profit target."""
+        return equity >= self.profit_target_equity
+
+    def transition_status(self, status: AccountStatus) -> None:
+        """Explicitly transition the account status after accounting is finalized."""
+        self.status = status
